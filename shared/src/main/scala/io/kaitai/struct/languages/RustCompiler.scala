@@ -21,7 +21,8 @@ class RustCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     with UpperCamelCaseClasses
     with UniversalFooter
     with SwitchIfOps
-    with UniversalDoc {
+    with UniversalDoc
+    with EveryWriteIsExpression {
 
   import RustCompiler._
 
@@ -1225,6 +1226,98 @@ class RustCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     out.dec
     out.puts("}")
   }
+
+  def endWrite(): Unit = {
+    // Does same thing as endRead
+    endRead()
+  }
+
+  override def writeHeader(endian: Option[FixedEndian], isEmpty: Boolean): Unit = {
+    out.puts
+    out.puts(s"pub fn write<W: $kWriteStreamName>(")
+    out.inc
+    out.puts(s"&self")
+    out.puts(s"io: &mut W")
+    out.dec
+    out.puts(s") -> KResult<()> {")
+    out.inc
+
+    if (typeProvider.nowClass.seq.isEmpty)
+      endWrite()
+  }
+
+  override def attrPrimitiveWrite(
+    io: String,
+    valueExpr: Ast.expr,
+    dataType: DataType,
+    defEndian: Option[FixedEndian],
+    exprTypeOpt: Option[DataType]
+  ): Unit = {
+    val exprType = exprTypeOpt.getOrElse(dataType)
+    val exprRaw = expression(valueExpr)
+    val expr = castIfNeeded(exprRaw, exprType, dataType)
+
+    val stmt = dataType match {
+      case t: ReadableType =>
+        t match {
+          case IntMultiType(_, _, None) =>
+            s"if *${privateMemberName(EndianIdentifier)} == 1 { $io.write_${t.apiCall(Some(LittleEndian))}($expr)?; } else { $io.write_${t.apiCall(Some(BigEndian))}($expr)?; }"
+          case IntMultiType(_, _, Some(e)) =>
+            s"$io.write_${t.apiCall(Some(e))}($expr)?;"
+          case _ =>
+            s"$io.write_${t.apiCall(defEndian)}($expr)?;"
+        }
+      case BitsType1(bitEndian) =>
+        s"$io.write_bits_int_${bitEndian.toSuffix}(1, $expr)"
+      case BitsType(width: Int, bitEndian) =>
+        s"$io.write_bits_int_${bitEndian.toSuffix}($width, $expr)"
+      case _: BytesType =>
+        s"$io.write_bytes($expr)"
+    }
+    out.puts(stmt + ";")
+  }
+
+  // TODO add checking errors
+  override def attrBasicCheck(checkExpr: Ast.expr, actual: Ast.expr, expected: Ast.expr, msg: String): Unit = {
+    val msgStr = expression(Ast.expr.Str(msg))
+
+    out.puts(s"if !(${expression(checkExpr)}) {")
+    out.inc
+    out.puts(s"return Err(());")
+    out.dec
+  }
+
+  override def attrObjectsEqualCheck(actual: Ast.expr, expected: Ast.expr, msg: String): Unit = {
+    val msgStr = expression(Ast.expr.Str(msg))
+
+    out.puts(s"if ${expression(actual)} != ${expression(expected)}")
+    out.inc
+    out.puts(s"return Err(());")
+    out.dec
+  }
+
+  override def attrIsEofCheck(io: String, expectedIsEof: Boolean, msg: String): Unit = ???
+
+  override def attrParentParamCheck(actualParentExpr: Ast.expr, ut: UserType, shouldDependOnIo: Option[Boolean], msg: String): Unit = ???
+
+  override def internalEnumIntType(basedOn: IntType): DataType = ???
+
+  override def attrBytesLimitWrite(io: String, expr: Ast.expr, size: String, term: Int, padRight: Int): Unit = ???
+
+  override def attrUserTypeInstreamWrite(io: String, expr: Ast.expr, t: DataType, exprType: DataType): Unit = ???
+
+  override def exprStreamToByteArray(ioFixed: String): String = ???
+
+  override def attrUnprocess(proc: ProcessExpr, varSrc: Identifier, varDest: Identifier, rep: RepeatSpec, dataType: BytesType, exprTypeOpt: Option[DataType]): Unit = ???
+
+  override def attrUnprocessPrepareBeforeSubIOHandler(proc: ProcessExpr, varSrc: Identifier): Unit = ???
+
+  override def condIfIsEofHeader(io: String, wantedIsEof: Boolean): Unit = ???
+
+  override def condIfIsEofFooter: Unit = ???
+
+  override def attrSetProperty(base: Ast.expr, propName: Identifier, value: String): Unit = ???
+
 }
 
 object RustCompiler
@@ -1277,6 +1370,7 @@ object RustCompiler
   override def kstructName = "KStruct"
 
   def kstructUnitName = "KStructUnit"
+  def kWriteStreamName = "KWriteStream"
 
   override def ksErrorName(err: KSError): String = err match {
     case EndOfStreamError => "KError::Eof"
